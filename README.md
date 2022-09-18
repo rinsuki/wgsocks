@@ -3,6 +3,8 @@
 ## TODO
 
 - [ ] MTU auto calc (like other WG implementation does)
+- [ ] IPv6 Support
+- [ ] DNS Support
 
 ## internal
 
