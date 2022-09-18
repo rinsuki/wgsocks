@@ -1,4 +1,4 @@
-use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}}, time::Duration, io::{Write, Read}};
+use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}}, time::Duration, io::{Write, Read}, net::Shutdown};
 
 use boringtun::{self, noise::TunnResult};
 
@@ -15,6 +15,7 @@ pub enum Queue {
     CreateTCPConnection(std::net::TcpStream, smoltcp::wire::IpAddress, u16),
     ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>),
     DisconnectFromProxyClient(smoltcp::iface::SocketHandle),
+    DisconnectFromRemote(smoltcp::iface::SocketHandle),
     ReceiveFromBoringTun(),
     ForcePoll,
 }
@@ -134,7 +135,7 @@ fn main() {
                                 println!("send_slice: {:?}", e);
                             },
                         }
-                    } else {
+                    } else if smolsock.state() != smoltcp::socket::TcpState::Closed {
                         let tx = tx.lock().unwrap();
                         tx.send(Queue::ForcePoll).unwrap();
                         tx.send(Queue::ReceiveFromProxyClient(handle, data)).unwrap();
@@ -143,6 +144,10 @@ fn main() {
                 Queue::DisconnectFromProxyClient(handle) => {
                     let sock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
                     sock.close();
+                },
+                Queue::DisconnectFromRemote(handle) => {
+                    // todo: add port to queue
+                    connection_map.remove(&handle);
                 },
                 Queue::ReceiveFromBoringTun() => break,
                 Queue::ForcePoll => break,
@@ -168,8 +173,9 @@ fn main() {
             for (handle, socket) in &connection_map {
                 let mut socket = socket;
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                if smolsock.is_open() {
+                if smolsock.may_recv() {
                     if not_connected_handles.contains(&handle) {
+                        println!("open!");
                         socket.write(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
                         let handle = handle.clone();
                         let mut socket = socket.try_clone().unwrap();
@@ -209,11 +215,19 @@ fn main() {
                         },
                     }
                 }
+                if smolsock.state() == smoltcp::socket::TcpState::Closed {
+                    match socket.shutdown(Shutdown::Both) {
+                        Ok(_) => {},
+                        Err(e) => {
+                            println!("shutdown error: {:?}", e);
+                        },
+                    };
+                    tx.lock().unwrap().send(Queue::DisconnectFromRemote(*handle)).unwrap();
+                }
             }
         }
         match iface.poll_at(current_time()) {
             Some(next_time) => {
-                println!("next_time: {:?}", next_time.total_micros());
                 should_block = Some(next_time);
             },
             None => {
