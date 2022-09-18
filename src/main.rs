@@ -13,9 +13,8 @@ mod socks;
 
 pub enum Queue {
     CreateTCPConnection(std::net::TcpStream, smoltcp::wire::IpAddress, u16),
-    ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>),
+    ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>, mpsc::Sender<()>),
     DisconnectFromProxyClient(smoltcp::iface::SocketHandle),
-    DisconnectFromRemote(smoltcp::iface::SocketHandle),
     ReceiveFromBoringTun(),
     ForcePoll,
 }
@@ -66,6 +65,7 @@ fn main() {
     // something => block w/ timeout
     let mut should_block: Option<smoltcp::time::Instant> = None;
     let mut not_connected_handles = HashSet::new();
+    let mut client_disconnected_handles = HashSet::new();
     let mut connection_map = HashMap::new();
     let mut rng = rand::thread_rng();
 
@@ -88,11 +88,11 @@ fn main() {
                         // todo: replace with recv_timeout w/ iface.poll_at
                         if timeout.total_micros() == 0 {
                             // probably just needs re-poll
-                            println!("repoll!");
+                            // println!("repoll");
                             break;
                         }
                         let w = timeout - current_time();
-                        println!("timeout: {:?}", w);
+                        // println!("timeout: {:?}", w);
                         let queue = rx.recv_timeout(Duration::from_micros(w.total_micros()));
                         match queue {
                             Ok(queue) => queue,
@@ -107,8 +107,8 @@ fn main() {
             match queue {
                 Queue::CreateTCPConnection(sock, host, port) => {
                     let smolsock = smoltcp::socket::TcpSocket::new(
-                        smoltcp::socket::TcpSocketBuffer::new(vec![0; 1024]),
-                        smoltcp::socket::TcpSocketBuffer::new(vec![0; 1024]),
+                        smoltcp::socket::TcpSocketBuffer::new(vec![0; 16384]),
+                        smoltcp::socket::TcpSocketBuffer::new(vec![0; 16384]),
                     );
                     let handle = iface.add_socket(smolsock);
                     let (smolsock, inner) = iface.get_socket_and_context::<smoltcp::socket::TcpSocket>(handle);
@@ -120,7 +120,7 @@ fn main() {
                     connection_map.insert(handle, sock);
                     not_connected_handles.insert(handle);
                 },
-                Queue::ReceiveFromProxyClient(handle, data) => {
+                Queue::ReceiveFromProxyClient(handle, data, tx2) => {
                     let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
                     if smolsock.can_send() {
                         match smolsock.send_slice(&data) {
@@ -128,7 +128,9 @@ fn main() {
                                 if size != data.len() {
                                     let tx = tx.lock().unwrap();
                                     tx.send(Queue::ForcePoll).unwrap();
-                                    tx.send(Queue::ReceiveFromProxyClient(handle, data[size..].to_vec())).unwrap();
+                                    tx.send(Queue::ReceiveFromProxyClient(handle, data[size..].to_vec(), tx2)).unwrap();
+                                } else {
+                                    tx2.send(());
                                 }
                             },
                             Err(e) => {
@@ -136,18 +138,18 @@ fn main() {
                             },
                         }
                     } else if smolsock.state() != smoltcp::socket::TcpState::Closed {
-                        let tx = tx.lock().unwrap();
-                        tx.send(Queue::ForcePoll).unwrap();
-                        tx.send(Queue::ReceiveFromProxyClient(handle, data)).unwrap();
+                        if smolsock.may_send() {
+                            let tx = tx.lock().unwrap();
+                            tx.send(Queue::ForcePoll).unwrap();
+                            tx.send(Queue::ReceiveFromProxyClient(handle, data, tx2)).unwrap();
+                        } else {
+                            println!("cantsend {:?}", smolsock.state());
+                        }
                     }
                 },
                 Queue::DisconnectFromProxyClient(handle) => {
                     let sock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
                     sock.close();
-                },
-                Queue::DisconnectFromRemote(handle) => {
-                    // todo: add port to queue
-                    connection_map.remove(&handle);
                 },
                 Queue::ReceiveFromBoringTun() => break,
                 Queue::ForcePoll => break,
@@ -170,6 +172,7 @@ fn main() {
         };
         if readiness_changed {
             // 何かが変わったかもしれないので見回りする
+            let mut disconnected_handles = vec![];
             for (handle, socket) in &connection_map {
                 let mut socket = socket;
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
@@ -181,35 +184,42 @@ fn main() {
                         let mut socket = socket.try_clone().unwrap();
                         let tx = tx.clone();
                         std::thread::spawn(move || {
+                            let (tx2, rx2) = mpsc::channel();
+                            tx2.send(()).unwrap();
                             loop {
                                 let mut buf = vec![0; 1024];
-                                let len = socket.read(&mut buf).unwrap();
+                                rx2.recv().unwrap();
+                                let len = match socket.read(&mut buf) {
+                                    Ok(len) => len,
+                                    Err(e) => {
+                                        println!("read error: {:?}", e);
+                                        break;
+                                    },
+                                };
                                 if len == 0 {
                                     break;
                                 }
-                                println!("read: {:?}", &buf[..len]);
-                                tx.lock().unwrap().send(Queue::ReceiveFromProxyClient(handle, buf[..len].to_vec())).unwrap();
+                                tx.lock().unwrap().send(Queue::ReceiveFromProxyClient(handle, buf[..len].to_vec(), tx2.clone())).unwrap();
                             }
                             tx.lock().unwrap().send(Queue::DisconnectFromProxyClient(handle)).unwrap();
                         });
                         not_connected_handles.remove(&handle);
                     }
                 }
-                if smolsock.may_recv() {
+                if smolsock.can_recv() && !client_disconnected_handles.contains(handle) {
                     let result = smolsock.recv(|buf| {
                         match socket.write(buf) {
-                            Ok(n) => (n, None),
+                            Ok(n) => (n, ()),
                             Err(e) => {
-                                println!("write error: {:?}", e);
-                                (0, Some(e))
+                                println!("write error ({:?}): {:?}", handle, e);
+                                client_disconnected_handles.insert(handle.clone());
+                                tx.lock().unwrap().send(Queue::DisconnectFromProxyClient(*handle)).unwrap();
+                                (0, ())
                             },
                         }
                     });
                     match result {
-                        Ok(n) => match n {
-                            Some(_) => todo!(),
-                            None => {},
-                        },
+                        Ok(_) => {},
                         Err(e) => {
                             println!("recv error: {:?}", e);
                         },
@@ -219,11 +229,14 @@ fn main() {
                     match socket.shutdown(Shutdown::Both) {
                         Ok(_) => {},
                         Err(e) => {
-                            println!("shutdown error: {:?}", e);
+                            println!("shutdown error({:?}): {:?}", handle, e);
                         },
                     };
-                    tx.lock().unwrap().send(Queue::DisconnectFromRemote(*handle)).unwrap();
+                    disconnected_handles.push(*handle);
                 }
+            }
+            for handle in disconnected_handles {
+                connection_map.remove(&handle);
             }
         }
         match iface.poll_at(current_time()) {
