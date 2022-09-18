@@ -6,6 +6,10 @@
 - [ ] IPv6 Support
 - [ ] DNS Support
 
+## LICENSE
+
+MIT OR Apache-2.0
+
 ## internal
 
 スレッドが複数生える
