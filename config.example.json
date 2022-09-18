@@ -1,0 +1,9 @@
+{
+    "ip4": "172.16.0.2",
+    "mtu": 1420,
+    "private_key": "Base64PrivateKey",
+    "peer": {
+        "endpoint": "vpn.example.com:54321",
+        "public_key": "Base64PublicKey"
+    }
+}
