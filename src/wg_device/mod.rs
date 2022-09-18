@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::{sync::{Arc, Mutex}, thread::sleep, time::Duration};
 
 use crate::config::{Config, decode_base64_key};
 
@@ -76,6 +76,41 @@ impl WGDevice {
                 }
             }
         });
+
+        {
+            let tunnel = tunnel.clone();
+            let socket = socket.try_clone().unwrap();
+            std::thread::spawn(move || {
+                let mut buf = vec![0; 1024];
+                loop {
+                    let result = tunnel.update_timers(&mut buf);
+                    match result {
+                        boringtun::noise::TunnResult::WriteToNetwork(data) => {
+                            println!("timer_write");
+                            socket.send(data).unwrap();
+                        }
+                        boringtun::noise::TunnResult::WriteToTunnelV4(data, _from_addr) => {
+                            todo!()
+                        },
+                        boringtun::noise::TunnResult::Done => {
+                            // println!("timer_done");
+                        },
+                        boringtun::noise::TunnResult::Err(boringtun::noise::errors::WireGuardError::InvalidCounter) => {
+                            // ????
+                            println!("timer_invalid_counter??");
+                        },
+                        boringtun::noise::TunnResult::Err(err) => {
+                            println!("timer_Error: {:?}", err);
+                            // break;
+                        }
+                        _ => {
+                            println!("timer_{:?}", result);
+                        },
+                    }
+                    sleep(Duration::from_secs(1));
+                }
+            });
+        }
 
         WGDevice { socket, tunnel, config, recv_buffer }
     }
