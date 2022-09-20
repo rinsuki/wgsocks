@@ -16,7 +16,7 @@ pub enum Queue {
     ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>, mpsc::Sender<()>),
     DisconnectFromProxyClient(smoltcp::iface::SocketHandle),
     ReceiveFromBoringTun(),
-    ForcePoll,
+    ForcePoll(u64),
 }
 
 fn current_time() -> smoltcp::time::Instant {
@@ -68,8 +68,10 @@ fn main() {
     let mut client_disconnected_handles = HashSet::new();
     let mut connection_map = HashMap::new();
     let mut rng = rand::thread_rng();
+    let mut cnt = 0 as u64;
 
     'queueinfinityloop: loop {
+        cnt += 1;
         loop {
             let queue = {
                 match should_block {
@@ -127,7 +129,7 @@ fn main() {
                             Ok(size) => {
                                 if size != data.len() {
                                     let tx = tx.lock().unwrap();
-                                    tx.send(Queue::ForcePoll).unwrap();
+                                    tx.send(Queue::ForcePoll(cnt)).unwrap();
                                     tx.send(Queue::ReceiveFromProxyClient(handle, data[size..].to_vec(), tx2)).unwrap();
                                 } else {
                                     tx2.send(());
@@ -140,7 +142,7 @@ fn main() {
                     } else if smolsock.state() != smoltcp::socket::TcpState::Closed {
                         if smolsock.may_send() {
                             let tx = tx.lock().unwrap();
-                            tx.send(Queue::ForcePoll).unwrap();
+                            tx.send(Queue::ForcePoll(cnt)).unwrap();
                             tx.send(Queue::ReceiveFromProxyClient(handle, data, tx2)).unwrap();
                         } else {
                             println!("cantsend {:?}", smolsock.state());
@@ -152,7 +154,11 @@ fn main() {
                     sock.close();
                 },
                 Queue::ReceiveFromBoringTun() => break,
-                Queue::ForcePoll => break,
+                Queue::ForcePoll(c) => {
+                    if cnt == c {
+                        break
+                    }
+                },
             }
         }
         let poll_res = iface.poll(current_time());
