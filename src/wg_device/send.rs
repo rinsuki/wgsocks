@@ -12,7 +12,7 @@ impl<'a> smoltcp::phy::TxToken for TxToken<'a> {
         let result = f(&mut send_buf);
         match result {
             Ok(_) => {
-                self.device.send(&send_buf);
+                self.device.send_tx.send(send_buf).unwrap();
             },
             Err(e) => {
                 println!("error {:?}", e);

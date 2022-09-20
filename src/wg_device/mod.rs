@@ -1,4 +1,4 @@
-use std::{sync::{Arc, Mutex, mpsc::{self, Receiver}}, thread::sleep, time::Duration};
+use std::{sync::{Arc, Mutex, mpsc::{self, Receiver, Sender}}, thread::sleep, time::Duration};
 
 use crate::config::{Config, decode_base64_key};
 
@@ -12,6 +12,7 @@ pub struct WGDevice {
     pub tunnel: Arc<Box<boringtun::noise::Tunn>>,
     pub config: Config,
     pub recv_rx: Receiver<Vec<u8>>,
+    pub send_tx: Sender<Vec<u8>>,
 }
 
 impl WGDevice {
@@ -77,6 +78,28 @@ impl WGDevice {
             });
         }
 
+        let (send_tx, send_rx) = mpsc::channel::<Vec<u8>>();
+        { // send to wireguard
+            let send_socket = socket.try_clone().unwrap();
+            let send_tunnel = tunnel.clone();
+            std::thread::spawn(move || {
+                loop {
+                    let data = send_rx.recv().unwrap();
+                    let mut wg_buf = vec![0u8; std::cmp::max(data.len() + 32, 148)];
+                    let encap_result = send_tunnel.encapsulate(&data, &mut wg_buf);
+                    match encap_result {
+                        boringtun::noise::TunnResult::WriteToNetwork(data) => {
+                            // println!("sending...");
+                            send_socket.send(data).unwrap();
+                        },
+                        _ => {
+                            println!("send_{:?}", encap_result);
+                        },
+                    }
+                }
+            });
+        }
+
         {
             let tunnel = tunnel.clone();
             let socket = socket.try_clone().unwrap();
@@ -112,22 +135,7 @@ impl WGDevice {
             });
         }
 
-        WGDevice { socket, tunnel, config, recv_rx }
-    }
-
-    pub fn send(&self, data: &[u8]) {
-        // println!("sending");
-        let mut wg_buf = vec![0u8; std::cmp::max(data.len() + 32, 148)];
-        let encap_result = self.tunnel.encapsulate(&data, &mut wg_buf);
-        match encap_result {
-            boringtun::noise::TunnResult::WriteToNetwork(data) => {
-                // println!("sending...");
-                self.socket.send(data).unwrap();
-            },
-            _ => {
-                println!("send_{:?}", encap_result);
-            },
-        }
+        WGDevice { socket, tunnel, config, recv_rx, send_tx }
     }
 }
 
