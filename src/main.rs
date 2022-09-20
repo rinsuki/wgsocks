@@ -69,6 +69,7 @@ fn main() {
     let mut connection_map = HashMap::new();
     let mut rng = rand::thread_rng();
     let mut cnt = 0 as u64;
+    let mut check_poll_at = true;
 
     'queueinfinityloop: loop {
         cnt += 1;
@@ -80,7 +81,10 @@ fn main() {
                         match queue {
                             Ok(queue) => queue,
                             Err(e) => match e {
-                                mpsc::TryRecvError::Empty => break,
+                                mpsc::TryRecvError::Empty => {
+                                    check_poll_at = true;
+                                    break;
+                                },
                                 mpsc::TryRecvError::Disconnected => break 'queueinfinityloop,
                             },
                         }
@@ -99,7 +103,10 @@ fn main() {
                         match queue {
                             Ok(queue) => queue,
                             Err(e) => match e {
-                                mpsc::RecvTimeoutError::Timeout => break,
+                                mpsc::RecvTimeoutError::Timeout => {
+                                    check_poll_at = true;
+                                    break;
+                                },
                                 mpsc::RecvTimeoutError::Disconnected => break 'queueinfinityloop,
                             },
                         }
@@ -153,7 +160,9 @@ fn main() {
                     let sock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
                     sock.close();
                 },
-                Queue::ReceiveFromBoringTun() => break,
+                Queue::ReceiveFromBoringTun() => {
+                    tx.lock().unwrap().send(Queue::ForcePoll(cnt)).unwrap();
+                },
                 Queue::ForcePoll(c) => {
                     if cnt == c {
                         break
@@ -245,13 +254,18 @@ fn main() {
                 connection_map.remove(&handle);
             }
         }
-        match iface.poll_at(current_time()) {
-            Some(next_time) => {
-                should_block = Some(next_time);
-            },
-            None => {
-                should_block = Some(current_time() + smoltcp::time::Duration::from_secs(1));
-            },
+        if check_poll_at {
+            match iface.poll_at(current_time()) {
+                Some(next_time) => {
+                    should_block = Some(next_time);
+                },
+                None => {
+                    should_block = Some(current_time() + smoltcp::time::Duration::from_secs(1));
+                },
+            }
+            check_poll_at = false;
+        } else {
+            should_block = None;
         }
     }
 }
