@@ -1,4 +1,4 @@
-use std::{sync::{Arc, Mutex}, thread::sleep, time::Duration};
+use std::{sync::{Arc, Mutex, mpsc::{self, Receiver}}, thread::sleep, time::Duration};
 
 use crate::config::{Config, decode_base64_key};
 
@@ -11,7 +11,7 @@ pub struct WGDevice {
     pub socket: std::net::UdpSocket,
     pub tunnel: Arc<Box<boringtun::noise::Tunn>>,
     pub config: Config,
-    pub recv_buffer: std::sync::Arc<std::sync::Mutex<Vec<Vec<u8>>>>,
+    pub recv_rx: Receiver<Vec<u8>>,
 }
 
 impl WGDevice {
@@ -36,46 +36,46 @@ impl WGDevice {
             None, 0, None
         ).unwrap());
 
-        let recv_buffer = Arc::new(Mutex::new(vec![]));
-        let recv_buffer_for_thread = recv_buffer.clone();
-        let recv_socket = socket.try_clone().unwrap();
-        let recv_tunnel = tunnel.clone();
-
-        std::thread::spawn(move || {
-            loop {
-                let mut buffer = vec![0; 1500];
-                let len = recv_socket.recv(&mut buffer).unwrap();
-                let mut decap_buf = vec![0u8; len];
-                let mut buffer = &buffer[..len];
+        let (recv_tx, recv_rx) = mpsc::channel::<Vec<u8>>();
+        { // recv from wireguard
+            let recv_socket = socket.try_clone().unwrap();
+            let recv_tunnel = tunnel.clone();
+            std::thread::spawn(move || {
                 loop {
-                    let decap_result = recv_tunnel.decapsulate(None, &buffer, &mut decap_buf);
-                    match decap_result {
-                        boringtun::noise::TunnResult::WriteToNetwork(data) => {
-                            recv_socket.send(data).unwrap();
-                            buffer = &[];
+                    let mut buffer = vec![0; 1500];
+                    let len = recv_socket.recv(&mut buffer).unwrap();
+                    let mut decap_buf = vec![0u8; len];
+                    let mut buffer = &buffer[..len];
+                    loop {
+                        let decap_result = recv_tunnel.decapsulate(None, &buffer, &mut decap_buf);
+                        match decap_result {
+                            boringtun::noise::TunnResult::WriteToNetwork(data) => {
+                                recv_socket.send(data).unwrap();
+                                buffer = &[];
+                            }
+                            boringtun::noise::TunnResult::WriteToTunnelV4(data, _from_addr) => {
+                                recv_tx.send(data.to_vec()).unwrap();
+                                callback.lock().unwrap()();
+                            },
+                            boringtun::noise::TunnResult::Done => {
+                                break;
+                            },
+                            boringtun::noise::TunnResult::Err(boringtun::noise::errors::WireGuardError::InvalidCounter) => {
+                                // ????
+                                break;
+                            },
+                            boringtun::noise::TunnResult::Err(err) => {
+                                println!("Error: {:?}", err);
+                                break;
+                            }
+                            _ => {
+                                println!("decap_{:?}", decap_result);
+                            },
                         }
-                        boringtun::noise::TunnResult::WriteToTunnelV4(data, _from_addr) => {
-                            recv_buffer_for_thread.lock().unwrap().push(data.to_vec());
-                            callback.lock().unwrap()();
-                        },
-                        boringtun::noise::TunnResult::Done => {
-                            break;
-                        },
-                        boringtun::noise::TunnResult::Err(boringtun::noise::errors::WireGuardError::InvalidCounter) => {
-                            // ????
-                            break;
-                        },
-                        boringtun::noise::TunnResult::Err(err) => {
-                            println!("Error: {:?}", err);
-                            break;
-                        }
-                        _ => {
-                            println!("decap_{:?}", decap_result);
-                        },
                     }
                 }
-            }
-        });
+            });
+        }
 
         {
             let tunnel = tunnel.clone();
@@ -112,7 +112,7 @@ impl WGDevice {
             });
         }
 
-        WGDevice { socket, tunnel, config, recv_buffer }
+        WGDevice { socket, tunnel, config, recv_rx }
     }
 
     pub fn send(&self, data: &[u8]) {
@@ -136,12 +136,12 @@ impl<'a> smoltcp::phy::Device<'a> for WGDevice {
     type TxToken = TxToken<'a>;
 
     fn receive(&'a mut self) -> Option<(Self::RxToken, Self::TxToken)> {
-        let mut locked = self.recv_buffer.lock().unwrap();
-        match locked.pop() {
-            Some(buffer) => {
+        let locked = self.recv_rx.try_recv();
+        match locked {
+            Ok(buffer) => {
                 Some((RxToken { buffer }, TxToken { device: self }))
             },
-            None => None,
+            Err(_) => None,
         }
     }
 
