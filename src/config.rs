@@ -1,16 +1,31 @@
 use std::net::{SocketAddr, Ipv4Addr};
 
-use serde::Deserialize;
+use serde::{Deserialize};
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
 pub struct Config {
     pub private_key: String,
     pub peer: PeerConfig,
     pub mtu: usize,
     pub ip4: Ipv4Addr,
+    pub dns: Option<DNSConfig>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize, Clone, Debug)]
+#[serde(untagged)]
+pub enum DNSConfig {
+    Special(SpecialDNSTypes),
+    // TODO: Support IPv6 and use IpAddr instead
+    // Custom(Ipv4Addr),
+}
+
+#[derive(Deserialize, Clone, Debug)]
+pub enum SpecialDNSTypes {
+    #[serde(rename = "system")]
+    System,
+}
+
+#[derive(Deserialize, Clone, Debug)]
 pub struct PeerConfig {
     pub endpoint: SocketAddr,
     pub public_key: String,

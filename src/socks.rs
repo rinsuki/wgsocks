@@ -1,9 +1,8 @@
-use std::{net::TcpStream, sync::{Arc, Mutex, mpsc::Sender}, io::{Read, Write}};
+use std::{net::{TcpStream, ToSocketAddrs}, sync::{Arc, Mutex, mpsc::Sender}, io::{Read, Write}};
 
-use crate::{Queue};
+use crate::{Queue, config::Config};
 
-
-pub fn run_socks_server(tx: Arc<Mutex<Sender<Queue>>>) {
+pub fn run_socks_server(tx: Arc<Mutex<Sender<Queue>>>, config: Arc<Config>) {
     let socks_listener = std::net::TcpListener::bind("0.0.0.0:1080").unwrap();
     let mut threads = vec![];
 
@@ -11,8 +10,9 @@ pub fn run_socks_server(tx: Arc<Mutex<Sender<Queue>>>) {
         match socks_socket {
             Ok(socks_socket) => {
                 let tx = tx.clone();
+                let config = config.clone();
                 threads.push(std::thread::spawn(move || {
-                    match handle_socks(socks_socket) {
+                    match handle_socks(socks_socket, config) {
                         Ok((socket, addr, port)) => {
                             // notify it
                             tx.lock().unwrap().send(Queue::CreateTCPConnection(socket, addr, port)).unwrap();
@@ -36,7 +36,7 @@ pub fn run_socks_server(tx: Arc<Mutex<Sender<Queue>>>) {
 }
 
 // RFC 1928 Server Implementation
-fn handle_socks(socks_socket: TcpStream) -> std::io::Result<(TcpStream, smoltcp::wire::IpAddress, u16)> {
+fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result<(TcpStream, smoltcp::wire::IpAddress, u16)> {
     let mut socks_socket = socks_socket;
     // 1. Read the first 2 bytes of the request
     let mut buf = [0u8; 2];
@@ -86,8 +86,44 @@ fn handle_socks(socks_socket: TcpStream) -> std::io::Result<(TcpStream, smoltcp:
         },
         3 => {
             // Domain name
-            println!("Currently DNS resolve is not supported");
-            None
+            match {
+                let mut char_count = [0u8; 1];
+                socks_socket.read_exact(&mut char_count).unwrap();
+                let mut buf = vec![0u8; char_count[0] as usize];
+                socks_socket.read_exact(&mut buf).unwrap();
+                match String::from_utf8(buf) {
+                    Ok(s) => Some(s),
+                    Err(e) => {
+                        println!("failed to parse domain name as UTF-8");
+                        None
+                    },
+                }
+            } {
+                Some(domain_name) => match config.dns {
+                    None => {
+                        println!("DNS is not configured");
+                        None
+                    },
+                    Some(ref dns) => {
+                        match dns {
+                            crate::config::DNSConfig::Special(crate::config::SpecialDNSTypes::System) => {
+                                println!("using system DNS: {}", &domain_name);
+                                let addr = (domain_name + ":443").to_socket_addrs();
+                                match addr {
+                                    Ok(mut addrs) => {
+                                        addrs.next().map(|addr| smoltcp::wire::IpAddress::from(addr.ip()))
+                                    },
+                                    Err(e) => {
+                                        println!("failed to resolve domain name: {}", e);
+                                        None
+                                    },
+                                }
+                            }
+                        }
+                    }
+                },
+                None => None
+            }
         },
         4 => {
             println!("Currently IPv6 dest is not supported");

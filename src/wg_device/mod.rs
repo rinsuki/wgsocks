@@ -10,13 +10,13 @@ use send::TxToken;
 pub struct WGDevice {
     pub socket: std::net::UdpSocket,
     pub tunnel: Arc<Box<boringtun::noise::Tunn>>,
-    pub config: Config,
+    pub config: Arc<Config>,
     pub recv_rx: Receiver<Vec<u8>>,
     pub send_tx: Sender<Vec<u8>>,
 }
 
 impl WGDevice {
-    pub fn new<Callback: Send + Fn() -> () + 'static>(config: Config, callback: Arc<Mutex<Callback>>) -> WGDevice {
+    pub fn new<Callback: Send + Fn() -> () + 'static>(config: Arc<Config>, callback: Arc<Mutex<Callback>>) -> WGDevice {
         let socket = {
             // create udp socket
             let local_addr = if config.peer.endpoint.is_ipv4() {

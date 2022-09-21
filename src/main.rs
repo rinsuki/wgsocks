@@ -25,7 +25,7 @@ fn current_time() -> smoltcp::time::Instant {
 }
 
 fn main() {
-    let config: Config = serde_json::from_reader(std::fs::File::open("config.json").unwrap()).unwrap();
+    let config = Arc::new(serde_json::from_reader::<_, Config>(std::fs::File::open("config.json").unwrap()).unwrap());
     let (tx, rx) = mpsc::channel::<Queue>();
     let tx = Arc::new(Mutex::new(tx));
 
@@ -58,7 +58,7 @@ fn main() {
 
     {
         let tx = tx.clone();
-        std::thread::spawn(move || socks::run_socks_server(tx));
+        std::thread::spawn(move || socks::run_socks_server(tx, config));
     }
 
     // None => it shouldn't block
