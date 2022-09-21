@@ -110,9 +110,16 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
                                 println!("using system DNS: {}", &domain_name);
                                 let addr = (domain_name + ":443").to_socket_addrs();
                                 match addr {
-                                    Ok(mut addrs) => {
-                                        addrs.next().map(|addr| smoltcp::wire::IpAddress::from(addr.ip()))
-                                    },
+                                    Ok(mut addrs) => (move || {
+                                        for addr in addrs {
+                                            println!("resolved: {}", addr);
+                                            if addr.is_ipv6() {
+                                                continue;
+                                            }
+                                            return Some(smoltcp::wire::IpAddress::from(addr.ip()));
+                                        }
+                                        return None
+                                    })(),
                                     Err(e) => {
                                         println!("failed to resolve domain name: {}", e);
                                         None
