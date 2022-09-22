@@ -43,7 +43,7 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
     socks_socket.read_exact(&mut buf)?;
     // 2. Check that the version is 5
     if buf[0] != 5 {
-        panic!("Invalid SOCKS version");
+        panic!("Invalid SOCKS version: {}", buf[0]);
     }
     // 3. Read authentication methods 
     let mut buf = vec![0u8; buf[1] as usize];
