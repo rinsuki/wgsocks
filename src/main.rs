@@ -263,6 +263,7 @@ fn main() {
                     }
                 }
                 if smolsock.state() == smoltcp::socket::TcpState::Closed {
+                    println!("close\n");
                     match socket.shutdown(Shutdown::Both) {
                         Ok(_) => {},
                         Err(e) => {
