@@ -165,6 +165,7 @@ fn main() {
                 },
                 Queue::ForcePoll(c) => {
                     if cnt == c {
+                        check_poll_at = true;
                         break
                     }
                 },
