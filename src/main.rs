@@ -132,11 +132,11 @@ fn main() {
                     );
                     let handle = iface.add_socket(smolsock);
                     let (smolsock, inner) = iface.get_socket_and_context::<smoltcp::socket::TcpSocket>(handle);
-                    let port = port_queue.1.recv().unwrap();
+                    let local_port = port_queue.1.recv().unwrap();
                     smolsock.connect(
                         inner, 
                         (host, port), 
-                        (smoltcp::wire::IpAddress::Unspecified, port),
+                        (smoltcp::wire::IpAddress::Unspecified, local_port),
                     ).unwrap();
                     connection_map.insert(handle, sock);
                     connection_port_map.insert(handle, port);
@@ -217,7 +217,6 @@ fn main() {
                             loop {
                                 let mut buf = vec![0; 1024];
                                 rx2.recv().unwrap();
-                                println!("recv");
                                 let len = match socket.read(&mut buf) {
                                     Ok(len) => len,
                                     Err(e) => {
