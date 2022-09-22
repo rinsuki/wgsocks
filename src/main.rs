@@ -6,7 +6,7 @@ mod config;
 use config::{Config};
 
 mod wg_device;
-use rand::Rng;
+use rand::{seq::SliceRandom};
 use wg_device::WGDevice;
 
 mod socks;
@@ -29,12 +29,23 @@ fn main() {
     let (tx, rx) = mpsc::channel::<Queue>();
     let tx = Arc::new(Mutex::new(tx));
 
+    let port_queue = mpsc::channel::<u16>();
+    {
+        let mut ports = (49152..65535).collect::<Vec<_>>();
+        let mut t = rand::thread_rng();
+        ports.shuffle(&mut t);
+        for port in ports {
+            port_queue.0.send(port).unwrap();
+        }
+    }
+
     let device = {
         let tx = tx.clone();
         WGDevice::new(config.clone(), Arc::new(Mutex::new(move || {
             tx.lock().unwrap().send(Queue::ReceiveFromBoringTun()).unwrap();
         })))
     };
+
     // initialize connection
     {
         let mut buf = vec![0u8; 1500];
@@ -124,7 +135,7 @@ fn main() {
                     smolsock.connect(
                         inner, 
                         (host, port), 
-                        (smoltcp::wire::IpAddress::Unspecified, rng.gen_range(49152..65535))
+                        (smoltcp::wire::IpAddress::Unspecified, port_queue.1.recv().unwrap()),
                     ).unwrap();
                     connection_map.insert(handle, sock);
                     not_connected_handles.insert(handle);
@@ -248,6 +259,7 @@ fn main() {
                             println!("shutdown error({:?}): {:?}", handle, e);
                         },
                     };
+                    port_queue.0.send(smolsock.local_endpoint().port).unwrap();
                     disconnected_handles.push(*handle);
                 }
             }
