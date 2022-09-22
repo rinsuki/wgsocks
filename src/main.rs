@@ -78,7 +78,7 @@ fn main() {
     let mut not_connected_handles = HashSet::new();
     let mut client_disconnected_handles = HashSet::new();
     let mut connection_map = HashMap::new();
-    let mut rng = rand::thread_rng();
+    let mut connection_port_map = HashMap::new();
     let mut cnt = 0 as u64;
     let mut check_poll_at = true;
 
@@ -132,12 +132,14 @@ fn main() {
                     );
                     let handle = iface.add_socket(smolsock);
                     let (smolsock, inner) = iface.get_socket_and_context::<smoltcp::socket::TcpSocket>(handle);
+                    let port = port_queue.1.recv().unwrap();
                     smolsock.connect(
                         inner, 
                         (host, port), 
-                        (smoltcp::wire::IpAddress::Unspecified, port_queue.1.recv().unwrap()),
+                        (smoltcp::wire::IpAddress::Unspecified, port),
                     ).unwrap();
                     connection_map.insert(handle, sock);
+                    connection_port_map.insert(handle, port);
                     not_connected_handles.insert(handle);
                 },
                 Queue::ReceiveFromProxyClient(handle, data, tx2) => {
@@ -200,8 +202,7 @@ fn main() {
         if readiness_changed {
             // 何かが変わったかもしれないので見回りする
             let mut disconnected_handles = vec![];
-            for (handle, socket) in &connection_map {
-                let mut socket = socket;
+            for (handle, mut socket) in &connection_map {
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
                 if smolsock.may_recv() {
                     if not_connected_handles.contains(&handle) {
@@ -216,6 +217,7 @@ fn main() {
                             loop {
                                 let mut buf = vec![0; 1024];
                                 rx2.recv().unwrap();
+                                println!("recv");
                                 let len = match socket.read(&mut buf) {
                                     Ok(len) => len,
                                     Err(e) => {
@@ -259,11 +261,12 @@ fn main() {
                             println!("shutdown error({:?}): {:?}", handle, e);
                         },
                     };
-                    port_queue.0.send(smolsock.local_endpoint().port).unwrap();
                     disconnected_handles.push(*handle);
                 }
             }
             for handle in disconnected_handles {
+                let local_port = connection_port_map.remove(&handle).unwrap();
+                port_queue.0.send(local_port).unwrap();
                 connection_map.remove(&handle);
                 iface.remove_socket(handle);
             }
