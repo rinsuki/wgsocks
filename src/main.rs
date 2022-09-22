@@ -1,3 +1,4 @@
+use core::panic;
 use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}}, time::Duration, io::{Write, Read}, net::Shutdown};
 
 use boringtun::{self, noise::TunnResult};
@@ -126,13 +127,22 @@ fn main() {
             };
             match queue {
                 Queue::CreateTCPConnection(sock, host, port) => {
+                    let local_port = match port_queue.1.try_recv() {
+                        Ok(p) => p,
+                        Err(mpsc::TryRecvError::Empty) => {
+                            let tx = tx.lock().unwrap();
+                            tx.send(Queue::ForcePoll(cnt)).unwrap();
+                            tx.send(Queue::CreateTCPConnection(sock, host, port)).unwrap();
+                            continue
+                        },
+                        Err(mpsc::TryRecvError::Disconnected) => panic!("port queue disconnected"),
+                    };
                     let smolsock = smoltcp::socket::TcpSocket::new(
                         smoltcp::socket::TcpSocketBuffer::new(vec![0; 16384]),
                         smoltcp::socket::TcpSocketBuffer::new(vec![0; 16384]),
                     );
                     let handle = iface.add_socket(smolsock);
                     let (smolsock, inner) = iface.get_socket_and_context::<smoltcp::socket::TcpSocket>(handle);
-                    let local_port = port_queue.1.recv().unwrap();
                     smolsock.connect(
                         inner, 
                         (host, port), 
