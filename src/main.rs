@@ -265,6 +265,7 @@ fn main() {
             }
             for handle in disconnected_handles {
                 connection_map.remove(&handle);
+                iface.remove_socket(handle);
             }
         }
         if check_poll_at {
