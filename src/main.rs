@@ -126,13 +126,12 @@ fn main() {
                 }
             };
             match queue {
-                Queue::CreateTCPConnection(sock, host, port) => {
+                Queue::CreateTCPConnection(mut sock, host, port) => {
                     let local_port = match port_queue.1.try_recv() {
                         Ok(p) => p,
                         Err(mpsc::TryRecvError::Empty) => {
-                            let tx = tx.lock().unwrap();
-                            tx.send(Queue::ForcePoll(cnt)).unwrap();
-                            tx.send(Queue::CreateTCPConnection(sock, host, port)).unwrap();
+                            println!("no more ports");
+                            sock.write(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
                             continue
                         },
                         Err(mpsc::TryRecvError::Disconnected) => panic!("port queue disconnected"),
