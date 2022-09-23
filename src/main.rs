@@ -225,8 +225,12 @@ fn main() {
                     }
                 },
                 Queue::DisconnectFromProxyClient(handle) => {
-                    let sock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
-                    sock.close();
+                    if connection_map.contains_key(&handle) {
+                        let sock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
+                        sock.close();
+                    } else {
+                        // probably already closed from server
+                    }
                 },
                 Queue::ReceiveFromBoringTun() => {
                     if !have_force_poll {
