@@ -108,6 +108,9 @@ fn main() {
             }
             println!("--- END QUEUE DUMP ---");
         }
+
+        let mut have_force_poll = false;
+
         loop {
             let queue = {
                 match should_block {
@@ -190,7 +193,10 @@ fn main() {
                     } else if smolsock.state() != smoltcp::socket::TcpState::Closed {
                         if smolsock.may_send() {
                             let tx = tx.lock().unwrap();
-                            tx.send(Queue::ForcePoll(cnt)).unwrap();
+                            if !have_force_poll {
+                                tx.send(Queue::ForcePoll(cnt)).unwrap();
+                                have_force_poll = true;
+                            }
                             tx.send(Queue::ReceiveFromProxyClient(handle, data, tx2)).unwrap();
                         } else {
                             println!("cantsend {:?}", smolsock.state());
@@ -202,7 +208,10 @@ fn main() {
                     sock.close();
                 },
                 Queue::ReceiveFromBoringTun() => {
-                    tx.lock().unwrap().send(Queue::ForcePoll(cnt)).unwrap();
+                    if !have_force_poll {
+                        tx.lock().unwrap().send(Queue::ForcePoll(cnt)).unwrap();
+                        have_force_poll = true;
+                    }
                 },
                 Queue::ForcePoll(c) => {
                     if cnt == c {
