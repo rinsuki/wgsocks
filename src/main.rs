@@ -276,7 +276,7 @@ fn main() {
                                 if len == 0 {
                                     break;
                                 }
-                                tx.lock().unwrap().send(Queue::ReceiveFromProxyClient(handle, buf[len..].to_vec(), tx2.clone())).unwrap();
+                                tx.lock().unwrap().send(Queue::ReceiveFromProxyClient(handle, buf[..len].to_vec(), tx2.clone())).unwrap();
                             }
                             tx.lock().unwrap().send(Queue::DisconnectFromProxyClient(handle)).unwrap();
                         });
