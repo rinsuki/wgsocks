@@ -104,11 +104,6 @@ fn main() {
                     Some(timeout) => {
                         should_block = None;
                         // todo: replace with recv_timeout w/ iface.poll_at
-                        if timeout.total_micros() == 0 {
-                            // probably just needs re-poll
-                            // println!("repoll");
-                            break;
-                        }
                         let w = timeout - current_time();
                         // println!("timeout: {:?}", w);
                         let queue = rx.recv_timeout(Duration::from_micros(w.total_micros()));
@@ -280,11 +275,17 @@ fn main() {
                 connection_map.remove(&handle);
                 iface.remove_socket(handle);
             }
+        } else {
+            check_poll_at = true;
         }
         if check_poll_at {
             match iface.poll_at(current_time()) {
                 Some(next_time) => {
-                    should_block = Some(next_time);
+                    if next_time.micros() != 0 {
+                        should_block = Some(next_time);
+                    } else {
+                        should_block = None;
+                    }
                 },
                 None => {
                     should_block = Some(current_time() + smoltcp::time::Duration::from_secs(1));
