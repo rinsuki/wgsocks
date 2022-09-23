@@ -132,6 +132,7 @@ fn main() {
                         Err(mpsc::TryRecvError::Empty) => {
                             println!("no more ports");
                             sock.write(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
+                            sock.shutdown(Shutdown::Both).unwrap();
                             continue
                         },
                         Err(mpsc::TryRecvError::Disconnected) => panic!("port queue disconnected"),
