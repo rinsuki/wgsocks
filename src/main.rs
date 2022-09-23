@@ -170,7 +170,7 @@ fn main() {
                         (smoltcp::wire::IpAddress::Unspecified, local_port),
                     ).unwrap();
                     connection_map.insert(handle, sock);
-                    connection_port_map.insert(handle, port);
+                    connection_port_map.insert(handle, local_port);
                     not_connected_handles.insert(handle);
                 },
                 Queue::ReceiveFromProxyClient(handle, data, tx2) => {
