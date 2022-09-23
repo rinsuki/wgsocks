@@ -255,7 +255,7 @@ fn main() {
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
                 if smolsock.may_recv() {
                     if not_connected_handles.contains(&handle) {
-                        println!("open!");
+                        println!("open! {}", handle);
                         socket.write(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
                         let handle = handle.clone();
                         let mut socket = socket.try_clone().unwrap();
@@ -303,7 +303,7 @@ fn main() {
                     }
                 }
                 if smolsock.state() == smoltcp::socket::TcpState::Closed {
-                    println!("close\n");
+                    println!("close {}", handle);
                     match socket.shutdown(Shutdown::Both) {
                         Ok(_) => {},
                         Err(e) => {
