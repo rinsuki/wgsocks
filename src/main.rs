@@ -1,5 +1,5 @@
 use core::panic;
-use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}}, time::Duration, io::{Write, Read}, net::Shutdown};
+use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}, atomic::AtomicBool}, time::Duration, io::{Write, Read}, net::Shutdown};
 
 use boringtun::{self, noise::TunnResult};
 
@@ -12,6 +12,7 @@ use wg_device::WGDevice;
 
 mod socks;
 
+#[derive(Debug)]
 pub enum Queue {
     CreateTCPConnection(std::net::TcpStream, smoltcp::wire::IpAddress, u16),
     ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>, mpsc::Sender<()>),
@@ -82,9 +83,31 @@ fn main() {
     let mut connection_port_map = HashMap::new();
     let mut cnt = 0 as u64;
     let mut check_poll_at = true;
+    let dump_current_queue = Arc::new(AtomicBool::new(false));
+
+    signal_hook::flag::register(signal_hook::consts::SIGUSR1, dump_current_queue.clone()).unwrap();
 
     'queueinfinityloop: loop {
         cnt += 1;
+        if dump_current_queue.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            let mut queues = vec![];
+            println!("--- QUEUE DUMP ---");
+            loop {
+                match rx.try_recv() {
+                    Ok(queue) => {
+                        println!("{:?}", queue);
+                        queues.push(queue);
+                    },
+                    Err(_) => {
+                        break;
+                    },
+                }
+            }
+            for queue in queues {
+                tx.lock().unwrap().send(queue).unwrap();
+            }
+            println!("--- END QUEUE DUMP ---");
+        }
         loop {
             let queue = {
                 match should_block {

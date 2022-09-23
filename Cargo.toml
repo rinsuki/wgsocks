@@ -12,6 +12,7 @@ managed = { version = "0.8.0", features = ["std", "map"] }
 rand = "0.8.5"
 serde = { version = "1.0.144", features = ["derive"] }
 serde_json = "1.0.85"
+signal-hook = "0.3.14"
 smoltcp = { version = "0.8.1", default-features = false, features = ["socket-tcp", "proto-ipv4", "proto-ipv6", "medium-ip", "std", "log"] }
 
 # todo: remove after https://github.com/cloudflare/boringtun/pull/312 gets merged and released
