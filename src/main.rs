@@ -1,5 +1,5 @@
 use core::panic;
-use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}, atomic::AtomicBool}, time::Duration, io::{Write, Read}, net::Shutdown};
+use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}, atomic::AtomicBool}, time::Duration, io::{Write, Read}, net::{Shutdown, SocketAddr}};
 
 use boringtun::{self, noise::TunnResult};
 
@@ -79,7 +79,7 @@ fn main() {
     let mut should_block: Option<smoltcp::time::Instant> = None;
     let mut not_connected_handles = HashSet::new();
     let mut client_disconnected_handles = HashSet::new();
-    let mut connection_map = HashMap::new();
+    let mut connection_map: HashMap<smoltcp::iface::SocketHandle, std::net::TcpStream> = HashMap::new();
     let mut connection_port_map = HashMap::new();
     let mut cnt = 0 as u64;
     let mut check_poll_at = true;
@@ -107,6 +107,18 @@ fn main() {
                 tx.lock().unwrap().send(queue).unwrap();
             }
             println!("--- END QUEUE DUMP ---");
+            println!("--- CONNECTION STATUSES DUMP ---");
+            for (handle, socket) in connection_map.iter() {
+                let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
+                match socket.peer_addr() {
+                    Ok(peer_addr) => println!("{}: {} -> {} -> {} (State: {})", handle, peer_addr, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state()),
+                    Err(e) => {
+                        println!("failed to get peer addr with error: {}", e);
+                        println!("{}: ??? -> {} -> {} (State: {})", handle, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                    }
+                }
+            }
+            println!("--- END CONNECTION STATUSES DUMP ---");
         }
 
         let mut have_force_poll = false;
