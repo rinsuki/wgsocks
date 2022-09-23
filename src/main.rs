@@ -84,6 +84,8 @@ fn main() {
     let mut cnt = 0 as u64;
     let mut check_poll_at = true;
     let dump_current_queue = Arc::new(AtomicBool::new(false));
+    // check WGSOCKS_DEBUG_QUEUE
+    let debug_queue_mode = std::env::var("WGSOCKS_DEBUG_QUEUE").is_ok();
 
     signal_hook::flag::register(signal_hook::consts::SIGUSR1, dump_current_queue.clone()).unwrap();
 
@@ -123,6 +125,10 @@ fn main() {
 
         let mut have_force_poll = false;
 
+        if debug_queue_mode {
+            println!("START QUEUE LOOP (should_block={:?})", should_block);
+        }
+
         loop {
             let queue = {
                 match should_block {
@@ -158,6 +164,9 @@ fn main() {
                     }
                 }
             };
+            if debug_queue_mode {
+                println!("QUEUE: {:?}", queue);
+            }
             match queue {
                 Queue::CreateTCPConnection(mut sock, host, port) => {
                     let local_port = match port_queue.1.try_recv() {
