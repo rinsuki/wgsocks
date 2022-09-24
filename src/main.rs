@@ -285,7 +285,7 @@ async fn main() {
                     tx.send(socks::OpenSocketResponse::Success(handle)).unwrap();
                 }
             }
-            for (handle, socket) in &connection_map {
+            for (handle, socket) in connection_map.iter() {
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
                 if smolsock.can_recv() {
                     let result = smolsock.recv(|buf| {
@@ -316,9 +316,9 @@ async fn main() {
             }
             for handle in disconnected_handles {
                 let local_port = connection_port_map.remove(&handle).unwrap();
-                port_queue.0.send(local_port).await.unwrap();
                 connection_map.remove(&handle);
                 iface.remove_socket(handle);
+                port_queue.0.send(local_port).await.unwrap();
             }
         } else {
             check_poll_at = true;
