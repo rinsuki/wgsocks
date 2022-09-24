@@ -7,18 +7,24 @@ use crate::{Queue, config::Config};
 pub async fn run_socks_server(tx: tokio::sync::mpsc::UnboundedSender<Queue>, config: Arc<Config>) {
     let socks_listener = tokio::net::TcpListener::bind("0.0.0.0:1080").await.unwrap();
     loop {
-        let (socks_socket, _) = socks_listener.accept().await.unwrap();
-        let tx = tx.clone();
-        let config = config.clone();
-        tokio::spawn(async move {
-            match handle_socks(socks_socket, config, tx).await {
-                Ok(_) => {
-                },
-                Err(e) => {
-                    println!("socks error: {:?}", e);
-                },
+        match socks_listener.accept().await {
+            Ok((socks_socket, _)) => {
+                let tx = tx.clone();
+                let config = config.clone();
+                tokio::spawn(async move {
+                    match handle_socks(socks_socket, config, tx).await {
+                        Ok(_) => {
+                        },
+                        Err(e) => {
+                            println!("socks error: {:?}", e);
+                        },
+                    }
+                });
+            },
+            Err(e) => {
+                println!("socks accept error: {:?}", e);
             }
-        });
+        };
     }
 }
 
