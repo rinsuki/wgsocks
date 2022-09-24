@@ -271,9 +271,9 @@ async fn main() {
                 false
             },
         };
-        if readiness_changed || force_check_sockets {
+        if readiness_changed || force_check_sockets || check_poll_at {
             if debug_queue_mode {
-                println!("check sockets (readiness_changed={}, force_check_sockets={})", readiness_changed, force_check_sockets);
+                println!("check sockets (readiness_changed={}, force_check_sockets={}, check_poll_at={})", readiness_changed, force_check_sockets, check_poll_at);
             }
             force_check_sockets = false;
             // 何かが変わったかもしれないので見回りする
