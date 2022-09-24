@@ -90,6 +90,7 @@ async fn main() {
     let dump_current_queue = Arc::new(AtomicBool::new(false));
     // check WGSOCKS_DEBUG_QUEUE
     let debug_queue_mode = std::env::var("WGSOCKS_DEBUG_QUEUE").is_ok();
+    let mut open_queue = tokio::sync::mpsc::unbounded_channel::<Queue>();
 
     signal_hook::flag::register(signal_hook::consts::SIGUSR1, dump_current_queue.clone()).unwrap();
 
@@ -182,9 +183,10 @@ async fn main() {
                                 tx.send(Queue::ForcePoll(cnt)).unwrap();
                                 have_force_poll = true;
                             }
-                            println!("no more ports...");
+                            println!("no more ports... wait it");
                             force_check_sockets = true;
-                            conn_tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
+                            // conn_tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
+                            open_queue.0.send(Queue::CreateTCPConnection(conn_tx, host, port)).unwrap();
                             continue
                         },
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => panic!("port queue disconnected"),
@@ -318,11 +320,20 @@ async fn main() {
                 disconnected_handles.push(*handle);
             }
         }
+        let some_disconnected_handles = disconnected_handles.len() > 0;
         for handle in disconnected_handles {
             let local_port = connection_port_map.remove(&handle).unwrap();
             connection_map.remove(&handle).unwrap();
             iface.remove_socket(handle);
             port_queue.0.send(local_port).await.unwrap();
+        }
+        if some_disconnected_handles {
+            loop {
+                match open_queue.1.try_recv() {
+                    Ok(q) => tx.send(q).unwrap(),
+                    Err(_) => break,
+                };
+            }
         }
         if check_poll_at {
             match iface.poll_at(current_time()) {
