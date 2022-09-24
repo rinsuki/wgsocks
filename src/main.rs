@@ -164,13 +164,17 @@ async fn main() {
                 println!("QUEUE: {:?}", queue);
             }
             match queue {
-                Queue::CreateTCPConnection(tx, host, port) => {
+                Queue::CreateTCPConnection(conn_tx, host, port) => {
                     let local_port = match port_queue.1.try_recv() {
                         Ok(p) => p,
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                            println!("no more ports");
+                            if !have_force_poll {
+                                tx.send(Queue::ForcePoll(cnt)).unwrap();
+                                have_force_poll = true;
+                            }
+                            println!("no more ports, requeue");
                             force_check_sockets = true;
-                            tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
+                            tx.send(Queue::CreateTCPConnection(conn_tx, host, port)).unwrap();
                             continue
                         },
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => panic!("port queue disconnected"),
