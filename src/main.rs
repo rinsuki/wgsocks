@@ -166,7 +166,13 @@ async fn main() {
                             Ok(None) => {
                                 panic!("queue channel closed");
                             },
-                            Err(_) => break,
+                            Err(_) => {
+                                if w > 100000 {
+                                    // it seems idle now, so check socket status
+                                    force_check_sockets = true;
+                                }
+                                break
+                            },
                         }
                     }
                 }
