@@ -317,7 +317,11 @@ async fn main() {
                         }
                     });
                     match result {
-                        Ok(_) => {},
+                        Ok(None) => {},
+                        Ok(Some(_)) => {
+                            // remote socket was closed...
+                            smolsock.close();
+                        }
                         Err(e) => {
                             println!("recv error: {:?}", e);
                         },
