@@ -179,9 +179,9 @@ async fn main() {
                                 tx.send(Queue::ForcePoll(cnt)).unwrap();
                                 have_force_poll = true;
                             }
-                            println!("no more ports, requeue");
+                            println!("no more ports...");
                             force_check_sockets = true;
-                            tx.send(Queue::CreateTCPConnection(conn_tx, host, port)).unwrap();
+                            conn_tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
                             continue
                         },
                         Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => panic!("port queue disconnected"),
