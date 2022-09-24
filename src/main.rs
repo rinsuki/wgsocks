@@ -294,7 +294,7 @@ async fn main() {
                                 Ok(_) => (buf.len(), None),
                                 Err(err) => {
                                     println!("warning!!! send error...");
-                                    (buf.len(), Some(err))
+                                    (0, Some(err))
                                 },
                             }
                         } else {
