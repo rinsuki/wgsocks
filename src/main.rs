@@ -173,7 +173,7 @@ fn main() {
                         Ok(p) => p,
                         Err(mpsc::TryRecvError::Empty) => {
                             println!("no more ports");
-                            sock.write(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
+                            sock.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
                             sock.shutdown(Shutdown::Both).unwrap();
                             continue
                         },
@@ -269,7 +269,7 @@ fn main() {
                 if smolsock.may_recv() {
                     if not_connected_handles.contains(&handle) {
                         println!("open! {}", handle);
-                        socket.write(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
+                        socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
                         let handle = handle.clone();
                         let mut socket = socket.try_clone().unwrap();
                         let tx = tx.clone();

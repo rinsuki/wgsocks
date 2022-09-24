@@ -60,7 +60,7 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
         panic!("No supported authentication method");
     }
     // 5. Send authentication method
-    socks_socket.write(&[5, 0]).unwrap();
+    socks_socket.write_all(&[5, 0]).unwrap();
     // 6. Read request
     let mut buf = [0u8; 4];
     socks_socket.read_exact(&mut buf).unwrap();
@@ -155,7 +155,7 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
     let addr = match addr {
         Some(addr) => addr,
         None => {
-            socks_socket.write(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            socks_socket.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid address"));
         },
     };
