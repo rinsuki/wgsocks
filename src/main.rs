@@ -26,7 +26,8 @@ fn current_time() -> smoltcp::time::Instant {
     smoltcp::time::Instant::now()
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let config = Arc::new(serde_json::from_reader::<_, Config>(std::fs::File::open("config.json").unwrap()).unwrap());
     let (tx, rx) = mpsc::channel::<Queue>();
     let tx = Arc::new(Mutex::new(tx));
