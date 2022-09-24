@@ -30,7 +30,7 @@ pub async fn run_socks_server(tx: tokio::sync::mpsc::UnboundedSender<Queue>, con
 
 #[derive(Debug)]
 pub struct ClientSocket {
-    pub peer: std::net::SocketAddr,
+    pub peer: Option<std::net::SocketAddr>,
     pub addr: smoltcp::wire::IpAddress,
     pub port: u16,
     pub tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
@@ -187,7 +187,13 @@ async fn handle_socks(socks_socket: tokio::net::TcpStream, config: Arc<Config>, 
 
     let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
     let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(1);
-    let peer = socks_socket.peer_addr().unwrap();
+    let peer = match socks_socket.peer_addr() {
+        Ok(addr) => Some(addr),
+        Err(e) => {
+            println!("failed to get peer addr: {}", e);
+            None
+        },
+    };
     let (mut read_socket, mut send_socket) = socks_socket.into_split();
 
     let client_socket = ClientSocket{

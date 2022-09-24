@@ -117,7 +117,14 @@ async fn main() {
             println!("--- CONNECTION STATUSES DUMP ---");
             for (handle, socket) in connection_map.iter() {
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                println!("{}: {} -> {} -> {} (State: {})", handle, socket.peer, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                match socket.peer {
+                    Some(peer) => {
+                        println!("{}: {} -> {} -> {} (State: {})", handle, peer, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                    },
+                    None => {
+                        println!("{}: ? -> {} -> {} (State: {})", handle, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                    },
+                }
             }
             println!("--- END CONNECTION STATUSES DUMP ---");
         }
