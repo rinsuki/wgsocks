@@ -269,6 +269,9 @@ async fn main() {
             },
         };
         if readiness_changed || force_check_sockets {
+            if debug_queue_mode {
+                println!("check sockets (readiness_changed={}, force_check_sockets={})", readiness_changed, force_check_sockets);
+            }
             force_check_sockets = false;
             // 何かが変わったかもしれないので見回りする
             let mut disconnected_handles = vec![];
