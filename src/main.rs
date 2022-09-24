@@ -191,7 +191,7 @@ async fn main() {
                         (smoltcp::wire::IpAddress::Unspecified, local_port),
                     ).unwrap();
                     connection_port_map.insert(handle, local_port);
-                    currently_connecting_handles.insert(handle, tx);
+                    currently_connecting_handles.insert(handle, conn_tx);
                 },
                 Queue::LinkSocket(handle, socket) => {
                     connection_map.insert(handle, socket);
