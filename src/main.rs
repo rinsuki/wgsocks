@@ -322,7 +322,7 @@ async fn main() {
             }
             for handle in disconnected_handles {
                 let local_port = connection_port_map.remove(&handle).unwrap();
-                connection_map.remove(&handle);
+                connection_map.remove(&handle).unwrap();
                 iface.remove_socket(handle);
                 port_queue.0.send(local_port).await.unwrap();
             }
