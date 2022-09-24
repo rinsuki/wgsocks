@@ -249,6 +249,7 @@ async fn main() {
                         tx.send(Queue::ForcePoll(cnt)).unwrap();
                         have_force_poll = true;
                     }
+                    force_check_sockets = true;
                 },
                 Queue::ForcePoll(c) => {
                     if cnt == c {
@@ -273,7 +274,7 @@ async fn main() {
                 false
             },
         };
-        if readiness_changed || force_check_sockets || check_poll_at {
+        if readiness_changed || force_check_sockets {
             if debug_queue_mode {
                 println!("check sockets (readiness_changed={}, force_check_sockets={}, check_poll_at={})", readiness_changed, force_check_sockets, check_poll_at);
             }
