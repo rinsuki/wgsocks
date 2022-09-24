@@ -154,9 +154,12 @@ async fn main() {
                     Some(timeout) => {
                         should_block = None;
                         // todo: replace with recv_timeout w/ iface.poll_at
-                        let w = timeout - current_time();
+                        let mut w = (timeout - current_time()).total_micros();
+                        if w > 1_000_000 {
+                            w = 1_000_000;
+                        }
                         // println!("timeout: {:?}", w);
-                        let queue = tokio::time::timeout(Duration::from_micros(w.total_micros()), rx.recv()).await;
+                        let queue = tokio::time::timeout(Duration::from_micros(w), rx.recv()).await;
                         match queue {
                             Ok(Some(queue)) => queue,
                             Ok(None) => {
