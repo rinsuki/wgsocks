@@ -271,63 +271,58 @@ async fn main() {
                 false
             },
         };
-        if readiness_changed || force_check_sockets || check_poll_at {
-            if debug_queue_mode {
-                println!("check sockets (readiness_changed={}, force_check_sockets={}, check_poll_at={})", readiness_changed, force_check_sockets, check_poll_at);
-            }
-            force_check_sockets = false;
-            // 何かが変わったかもしれないので見回りする
-            let mut disconnected_handles = vec![];
-            {
-                let mut handles = vec![];
-                for handle in currently_connecting_handles.keys() {
-                    let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                    if smolsock.state() == smoltcp::socket::TcpState::Established {
-                        handles.push(*handle);
-                    }
-                }
-                for handle in handles {
-                    let tx = currently_connecting_handles.remove(&handle).unwrap();
-                    tx.send(socks::OpenSocketResponse::Success(handle)).unwrap();
-                }
-            }
-            for (handle, socket) in connection_map.iter() {
-                let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                if smolsock.can_recv() {
-                    let result = smolsock.recv(|buf| {
-                        if buf.len() > 0 {
-                            match socket.tx.send(buf.to_vec()) {
-                                Ok(_) => (buf.len(), None),
-                                Err(err) => {
-                                    println!("warning!!! send error...");
-                                    (0, Some(err))
-                                },
-                            }
-                        } else {
-                            (buf.len(), None)
-                        }
-                    });
-                    match result {
-                        Ok(_) => {},
-                        Err(e) => {
-                            println!("recv error: {:?}", e);
-                        },
-                    }
-                }
-                if smolsock.state() == smoltcp::socket::TcpState::Closed {
-                    println!("close {}", handle);
-                    _ = socket.tx.send(vec![]);
-                    disconnected_handles.push(*handle);
-                }
-            }
-            for handle in disconnected_handles {
-                let local_port = connection_port_map.remove(&handle).unwrap();
-                connection_map.remove(&handle).unwrap();
-                iface.remove_socket(handle);
-                port_queue.0.send(local_port).await.unwrap();
-            }
-        } else {
+        if !readiness_changed {
             check_poll_at = true;
+        }
+        // 何かが変わったかもしれないので見回りする
+        let mut disconnected_handles = vec![];
+        {
+            let mut handles = vec![];
+            for handle in currently_connecting_handles.keys() {
+                let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
+                if smolsock.state() == smoltcp::socket::TcpState::Established {
+                    handles.push(*handle);
+                }
+            }
+            for handle in handles {
+                let tx = currently_connecting_handles.remove(&handle).unwrap();
+                tx.send(socks::OpenSocketResponse::Success(handle)).unwrap();
+            }
+        }
+        for (handle, socket) in connection_map.iter() {
+            let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
+            if smolsock.can_recv() {
+                let result = smolsock.recv(|buf| {
+                    if buf.len() > 0 {
+                        match socket.tx.send(buf.to_vec()) {
+                            Ok(_) => (buf.len(), None),
+                            Err(err) => {
+                                println!("warning!!! send error...");
+                                (0, Some(err))
+                            },
+                        }
+                    } else {
+                        (buf.len(), None)
+                    }
+                });
+                match result {
+                    Ok(_) => {},
+                    Err(e) => {
+                        println!("recv error: {:?}", e);
+                    },
+                }
+            }
+            if smolsock.state() == smoltcp::socket::TcpState::Closed {
+                println!("close {}", handle);
+                _ = socket.tx.send(vec![]);
+                disconnected_handles.push(*handle);
+            }
+        }
+        for handle in disconnected_handles {
+            let local_port = connection_port_map.remove(&handle).unwrap();
+            connection_map.remove(&handle).unwrap();
+            iface.remove_socket(handle);
+            port_queue.0.send(local_port).await.unwrap();
         }
         if check_poll_at {
             match iface.poll_at(current_time()) {
