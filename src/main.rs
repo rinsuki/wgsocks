@@ -93,6 +93,7 @@ async fn main() {
 
     signal_hook::flag::register(signal_hook::consts::SIGUSR1, dump_current_queue.clone()).unwrap();
 
+    let mut force_check_sockets = false;
     'queueinfinityloop: loop {
         cnt += 1;
         if dump_current_queue.swap(false, std::sync::atomic::Ordering::Relaxed) {
@@ -168,6 +169,7 @@ async fn main() {
                         Ok(p) => p,
                         Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                             println!("no more ports");
+                            force_check_sockets = true;
                             tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
                             continue
                         },
@@ -255,7 +257,8 @@ async fn main() {
                 false
             },
         };
-        if readiness_changed {
+        if readiness_changed || force_check_sockets {
+            force_check_sockets = false;
             // 何かが変わったかもしれないので見回りする
             let mut disconnected_handles = vec![];
             {
