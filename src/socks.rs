@@ -248,7 +248,15 @@ async fn handle_socks(socks_socket: tokio::net::TcpStream, config: Arc<Config>, 
         // smoltcp -> socks client
         let tx = tx.clone();
         tokio::spawn(async move {
-            send_socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await.unwrap();
+            match send_socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await {
+                Ok(()) => {},
+                Err(err) => {
+                    println!("failed to send SOCKS response: {}", err);
+                    _ = send_socket.shutdown().await;
+                    tx.send(Queue::DisconnectFromProxyClient(handle)).unwrap();
+                    return;
+                },
+            };
             loop {
                 match packet_rx.recv().await {
                     Some(packet) => {
@@ -267,6 +275,7 @@ async fn handle_socks(socks_socket: tokio::net::TcpStream, config: Arc<Config>, 
                     None => break,
                 }
             }
+            _ = send_socket.shutdown().await;
             server_closed.store(true, std::sync::atomic::Ordering::Relaxed);
             tx.send(Queue::DisconnectFromProxyClient(handle)).unwrap();
         });
