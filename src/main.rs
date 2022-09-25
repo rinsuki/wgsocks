@@ -1,5 +1,5 @@
 use core::panic;
-use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, mpsc::{self}, atomic::AtomicBool}, time::Duration, io::{Write, Read}, net::{Shutdown, SocketAddr}};
+use std::{vec, collections::{HashMap, HashSet}, sync::{Arc, Mutex, atomic::AtomicBool}, time::Duration, io::{Write, Read}, net::{Shutdown, SocketAddr}};
 
 use boringtun::{self, noise::TunnResult};
 
@@ -8,14 +8,16 @@ use config::{Config};
 
 mod wg_device;
 use rand::{seq::SliceRandom};
+use socks::ClientSocket;
 use wg_device::WGDevice;
 
 mod socks;
 
 #[derive(Debug)]
 pub enum Queue {
-    CreateTCPConnection(std::net::TcpStream, smoltcp::wire::IpAddress, u16),
-    ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>, mpsc::Sender<()>),
+    CreateTCPConnection(tokio::sync::oneshot::Sender<socks::OpenSocketResponse>, smoltcp::wire::IpAddress, u16),
+    LinkSocket(smoltcp::iface::SocketHandle, socks::ClientSocket),
+    ReceiveFromProxyClient(smoltcp::iface::SocketHandle, Vec<u8>, tokio::sync::mpsc::Sender<()>),
     DisconnectFromProxyClient(smoltcp::iface::SocketHandle),
     ReceiveFromBoringTun(),
     ForcePoll(u64),
@@ -26,25 +28,25 @@ fn current_time() -> smoltcp::time::Instant {
     smoltcp::time::Instant::now()
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let config = Arc::new(serde_json::from_reader::<_, Config>(std::fs::File::open("config.json").unwrap()).unwrap());
-    let (tx, rx) = mpsc::channel::<Queue>();
-    let tx = Arc::new(Mutex::new(tx));
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
-    let port_queue = mpsc::channel::<u16>();
+    let mut port_queue = tokio::sync::mpsc::channel::<u16>(16384);
     {
         let mut ports = (49152..65535).collect::<Vec<_>>();
         let mut t = rand::thread_rng();
         ports.shuffle(&mut t);
         for port in ports {
-            port_queue.0.send(port).unwrap();
+            port_queue.0.send(port).await;
         }
     }
 
     let device = {
         let tx = tx.clone();
         WGDevice::new(config.clone(), Arc::new(Mutex::new(move || {
-            tx.lock().unwrap().send(Queue::ReceiveFromBoringTun()).unwrap();
+            tx.send(Queue::ReceiveFromBoringTun()).unwrap();
         })))
     };
 
@@ -71,24 +73,28 @@ fn main() {
 
     {
         let tx = tx.clone();
-        std::thread::spawn(move || socks::run_socks_server(tx, config));
+        tokio::spawn(async move {
+            socks::run_socks_server(tx, config).await;
+        });
     }
 
     // None => it shouldn't block
     // something => block w/ timeout
     let mut should_block: Option<smoltcp::time::Instant> = None;
-    let mut not_connected_handles = HashSet::new();
-    let mut client_disconnected_handles = HashSet::new();
-    let mut connection_map: HashMap<smoltcp::iface::SocketHandle, std::net::TcpStream> = HashMap::new();
+    let mut currently_connecting_handles = HashMap::new();
+    // let mut client_disconnected_handles = HashSet::new();
+    let mut connection_map: HashMap<smoltcp::iface::SocketHandle, ClientSocket> = HashMap::new();
     let mut connection_port_map = HashMap::new();
     let mut cnt = 0 as u64;
     let mut check_poll_at = true;
     let dump_current_queue = Arc::new(AtomicBool::new(false));
     // check WGSOCKS_DEBUG_QUEUE
     let debug_queue_mode = std::env::var("WGSOCKS_DEBUG_QUEUE").is_ok();
+    let mut open_queue = tokio::sync::mpsc::unbounded_channel::<Queue>();
 
     signal_hook::flag::register(signal_hook::consts::SIGUSR1, dump_current_queue.clone()).unwrap();
 
+    let mut force_check_sockets = false;
     'queueinfinityloop: loop {
         cnt += 1;
         if dump_current_queue.swap(false, std::sync::atomic::Ordering::Relaxed) {
@@ -106,18 +112,19 @@ fn main() {
                 }
             }
             for queue in queues {
-                tx.lock().unwrap().send(queue).unwrap();
+                tx.send(queue).unwrap();
             }
             println!("--- END QUEUE DUMP ---");
             println!("--- CONNECTION STATUSES DUMP ---");
             for (handle, socket) in connection_map.iter() {
                 let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                match socket.peer_addr() {
-                    Ok(peer_addr) => println!("{}: {} -> {} -> {} (State: {})", handle, peer_addr, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state()),
-                    Err(e) => {
-                        println!("failed to get peer addr with error: {}", e);
-                        println!("{}: ??? -> {} -> {} (State: {})", handle, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
-                    }
+                match socket.peer {
+                    Some(peer) => {
+                        println!("{}: {} -> {} -> {} (State: {})", handle, peer, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                    },
+                    None => {
+                        println!("{}: ? -> {} -> {} (State: {})", handle, smolsock.local_endpoint(), smolsock.remote_endpoint(), smolsock.state());
+                    },
                 }
             }
             println!("--- END CONNECTION STATUSES DUMP ---");
@@ -137,28 +144,34 @@ fn main() {
                         match queue {
                             Ok(queue) => queue,
                             Err(e) => match e {
-                                mpsc::TryRecvError::Empty => {
+                                tokio::sync::mpsc::error::TryRecvError::Empty => {
                                     check_poll_at = true;
                                     break;
                                 },
-                                mpsc::TryRecvError::Disconnected => break 'queueinfinityloop,
+                                tokio::sync::mpsc::error::TryRecvError::Disconnected => break 'queueinfinityloop,
                             },
                         }
                     }
                     Some(timeout) => {
                         should_block = None;
                         // todo: replace with recv_timeout w/ iface.poll_at
-                        let w = timeout - current_time();
+                        let mut w = (timeout - current_time()).total_micros();
+                        if w > 1_000_000 {
+                            w = 1_000_000;
+                        }
                         // println!("timeout: {:?}", w);
-                        let queue = rx.recv_timeout(Duration::from_micros(w.total_micros()));
+                        let queue = tokio::time::timeout(Duration::from_micros(w), rx.recv()).await;
                         match queue {
-                            Ok(queue) => queue,
-                            Err(e) => match e {
-                                mpsc::RecvTimeoutError::Timeout => {
-                                    check_poll_at = true;
-                                    break;
-                                },
-                                mpsc::RecvTimeoutError::Disconnected => break 'queueinfinityloop,
+                            Ok(Some(queue)) => queue,
+                            Ok(None) => {
+                                panic!("queue channel closed");
+                            },
+                            Err(_) => {
+                                if w > 100000 {
+                                    // it seems idle now, so check socket status
+                                    force_check_sockets = true;
+                                }
+                                break
                             },
                         }
                     }
@@ -168,16 +181,21 @@ fn main() {
                 println!("QUEUE: {:?}", queue);
             }
             match queue {
-                Queue::CreateTCPConnection(mut sock, host, port) => {
+                Queue::CreateTCPConnection(conn_tx, host, port) => {
                     let local_port = match port_queue.1.try_recv() {
                         Ok(p) => p,
-                        Err(mpsc::TryRecvError::Empty) => {
-                            println!("no more ports");
-                            sock.write_all(&[0x05, 0x01, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
-                            sock.shutdown(Shutdown::Both).unwrap();
+                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                            if !have_force_poll {
+                                tx.send(Queue::ForcePoll(cnt)).unwrap();
+                                have_force_poll = true;
+                            }
+                            println!("no more ports... wait it");
+                            force_check_sockets = true;
+                            // conn_tx.send(socks::OpenSocketResponse::FailureNoPort).unwrap();
+                            open_queue.0.send(Queue::CreateTCPConnection(conn_tx, host, port)).unwrap();
                             continue
                         },
-                        Err(mpsc::TryRecvError::Disconnected) => panic!("port queue disconnected"),
+                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => panic!("port queue disconnected"),
                     };
                     let smolsock = smoltcp::socket::TcpSocket::new(
                         smoltcp::socket::TcpSocketBuffer::new(vec![0; 16384]),
@@ -190,21 +208,22 @@ fn main() {
                         (host, port), 
                         (smoltcp::wire::IpAddress::Unspecified, local_port),
                     ).unwrap();
-                    connection_map.insert(handle, sock);
                     connection_port_map.insert(handle, local_port);
-                    not_connected_handles.insert(handle);
+                    currently_connecting_handles.insert(handle, conn_tx);
                 },
+                Queue::LinkSocket(handle, socket) => {
+                    connection_map.insert(handle, socket);
+                }
                 Queue::ReceiveFromProxyClient(handle, data, tx2) => {
                     let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(handle);
                     if smolsock.can_send() {
                         match smolsock.send_slice(&data) {
                             Ok(size) => {
                                 if size != data.len() {
-                                    let tx = tx.lock().unwrap();
                                     tx.send(Queue::ForcePoll(cnt)).unwrap();
                                     tx.send(Queue::ReceiveFromProxyClient(handle, data[size..].to_vec(), tx2)).unwrap();
                                 } else {
-                                    tx2.send(());
+                                    tx2.send(()).await.unwrap();
                                 }
                             },
                             Err(e) => {
@@ -213,7 +232,6 @@ fn main() {
                         }
                     } else if smolsock.state() != smoltcp::socket::TcpState::Closed {
                         if smolsock.may_send() {
-                            let tx = tx.lock().unwrap();
                             if !have_force_poll {
                                 tx.send(Queue::ForcePoll(cnt)).unwrap();
                                 have_force_poll = true;
@@ -234,9 +252,10 @@ fn main() {
                 },
                 Queue::ReceiveFromBoringTun() => {
                     if !have_force_poll {
-                        tx.lock().unwrap().send(Queue::ForcePoll(cnt)).unwrap();
+                        tx.send(Queue::ForcePoll(cnt)).unwrap();
                         have_force_poll = true;
                     }
+                    force_check_sockets = true;
                 },
                 Queue::ForcePoll(c) => {
                     if cnt == c {
@@ -261,55 +280,48 @@ fn main() {
                 false
             },
         };
-        if readiness_changed {
+        if readiness_changed || force_check_sockets {
+            if debug_queue_mode {
+                println!("check sockets (readiness_changed={}, force_check_sockets={}, check_poll_at={})", readiness_changed, force_check_sockets, check_poll_at);
+            }
+            force_check_sockets = false;
             // 何かが変わったかもしれないので見回りする
             let mut disconnected_handles = vec![];
-            for (handle, mut socket) in &connection_map {
-                let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
-                if smolsock.may_recv() {
-                    if not_connected_handles.contains(&handle) {
-                        println!("open! {}", handle);
-                        socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).unwrap();
-                        let handle = handle.clone();
-                        let mut socket = socket.try_clone().unwrap();
-                        let tx = tx.clone();
-                        std::thread::spawn(move || {
-                            let (tx2, rx2) = mpsc::channel();
-                            tx2.send(()).unwrap();
-                            loop {
-                                let mut buf = vec![0; 1024];
-                                rx2.recv().unwrap();
-                                let len = match socket.read(&mut buf) {
-                                    Ok(len) => len,
-                                    Err(e) => {
-                                        println!("read error: {:?}", e);
-                                        break;
-                                    },
-                                };
-                                if len == 0 {
-                                    break;
-                                }
-                                tx.lock().unwrap().send(Queue::ReceiveFromProxyClient(handle, buf[..len].to_vec(), tx2.clone())).unwrap();
-                            }
-                            tx.lock().unwrap().send(Queue::DisconnectFromProxyClient(handle)).unwrap();
-                        });
-                        not_connected_handles.remove(&handle);
+            {
+                let mut handles = vec![];
+                for handle in currently_connecting_handles.keys() {
+                    let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
+                    if smolsock.state() == smoltcp::socket::TcpState::Established {
+                        handles.push(*handle);
                     }
                 }
-                if smolsock.can_recv() && !client_disconnected_handles.contains(handle) {
+                for handle in handles {
+                    let tx = currently_connecting_handles.remove(&handle).unwrap();
+                    tx.send(socks::OpenSocketResponse::Success(handle)).unwrap();
+                }
+            }
+            for (handle, socket) in connection_map.iter() {
+                let smolsock = iface.get_socket::<smoltcp::socket::TcpSocket>(*handle);
+                if smolsock.can_recv() {
                     let result = smolsock.recv(|buf| {
-                        match socket.write(buf) {
-                            Ok(n) => (n, ()),
-                            Err(e) => {
-                                println!("write error ({:?}): {:?}", handle, e);
-                                client_disconnected_handles.insert(handle.clone());
-                                tx.lock().unwrap().send(Queue::DisconnectFromProxyClient(*handle)).unwrap();
-                                (0, ())
-                            },
+                        if buf.len() > 0 {
+                            match socket.tx.send(buf.to_vec()) {
+                                Ok(_) => (buf.len(), None),
+                                Err(err) => {
+                                    println!("warning!!! send error...");
+                                    (buf.len(), Some(err))
+                                },
+                            }
+                        } else {
+                            (buf.len(), None)
                         }
                     });
                     match result {
-                        Ok(_) => {},
+                        Ok(None) => {},
+                        Ok(Some(_)) => {
+                            // remote socket was closed...
+                            smolsock.close();
+                        }
                         Err(e) => {
                             println!("recv error: {:?}", e);
                         },
@@ -317,20 +329,24 @@ fn main() {
                 }
                 if smolsock.state() == smoltcp::socket::TcpState::Closed {
                     println!("close {}", handle);
-                    match socket.shutdown(Shutdown::Both) {
-                        Ok(_) => {},
-                        Err(e) => {
-                            println!("shutdown error({:?}): {:?}", handle, e);
-                        },
-                    };
+                    _ = socket.tx.send(vec![]);
                     disconnected_handles.push(*handle);
                 }
             }
+            let some_disconnected_handles = disconnected_handles.len() > 0;
             for handle in disconnected_handles {
                 let local_port = connection_port_map.remove(&handle).unwrap();
-                port_queue.0.send(local_port).unwrap();
-                connection_map.remove(&handle);
+                connection_map.remove(&handle).unwrap();
                 iface.remove_socket(handle);
+                port_queue.0.send(local_port).await.unwrap();
+            }
+            if some_disconnected_handles {
+                loop {
+                    match open_queue.1.try_recv() {
+                        Ok(q) => tx.send(q).unwrap(),
+                        Err(_) => break,
+                    };
+                }
             }
         } else {
             check_poll_at = true;

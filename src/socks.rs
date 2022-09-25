@@ -1,53 +1,60 @@
-use std::{net::{TcpStream, ToSocketAddrs}, sync::{Arc, Mutex, mpsc::Sender}, io::{Read, Write}};
+use std::{net::{TcpStream, ToSocketAddrs}, sync::{Arc, Mutex, atomic::AtomicBool}, io::{Read, Write}};
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::{Queue, config::Config};
 
-pub fn run_socks_server(tx: Arc<Mutex<Sender<Queue>>>, config: Arc<Config>) {
-    let socks_listener = std::net::TcpListener::bind("0.0.0.0:1080").unwrap();
-    let mut threads = vec![];
-
-    for socks_socket in socks_listener.incoming() {
-        match socks_socket {
-            Ok(socks_socket) => {
+pub async fn run_socks_server(tx: tokio::sync::mpsc::UnboundedSender<Queue>, config: Arc<Config>) {
+    let socks_listener = tokio::net::TcpListener::bind("0.0.0.0:1080").await.unwrap();
+    loop {
+        match socks_listener.accept().await {
+            Ok((socks_socket, _)) => {
                 let tx = tx.clone();
                 let config = config.clone();
-                threads.push(std::thread::spawn(move || {
-                    match handle_socks(socks_socket, config) {
-                        Ok((socket, addr, port)) => {
-                            // notify it
-                            tx.lock().unwrap().send(Queue::CreateTCPConnection(socket, addr, port)).unwrap();
+                tokio::spawn(async move {
+                    match handle_socks(socks_socket, config, tx).await {
+                        Ok(_) => {
                         },
                         Err(e) => {
                             println!("socks error: {:?}", e);
                         },
                     }
-                }));
+                });
             },
             Err(e) => {
-                println!("socks error: {}", e);
-                break;
-            },
-        }
-    }
-
-    for thread in threads {
-        thread.join().unwrap();
+                println!("socks accept error: {:?}", e);
+            }
+        };
     }
 }
 
+#[derive(Debug)]
+pub struct ClientSocket {
+    pub peer: Option<std::net::SocketAddr>,
+    pub addr: smoltcp::wire::IpAddress,
+    pub port: u16,
+    pub tx: tokio::sync::mpsc::UnboundedSender<Vec<u8>>,
+}
+
+#[derive(Debug)]
+pub enum OpenSocketResponse {
+    FailureNoPort,
+    Success(smoltcp::iface::SocketHandle),
+}
+
 // RFC 1928 Server Implementation
-fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result<(TcpStream, smoltcp::wire::IpAddress, u16)> {
+async fn handle_socks(socks_socket: tokio::net::TcpStream, config: Arc<Config>, tx: tokio::sync::mpsc::UnboundedSender<Queue>) -> std::io::Result<()> {
     let mut socks_socket = socks_socket;
     // 1. Read the first 2 bytes of the request
     let mut buf = [0u8; 2];
-    socks_socket.read_exact(&mut buf)?;
+    socks_socket.read_exact(&mut buf).await?;
     // 2. Check that the version is 5
     if buf[0] != 5 {
         panic!("Invalid SOCKS version: {}", buf[0]);
     }
     // 3. Read authentication methods 
     let mut buf = vec![0u8; buf[1] as usize];
-    socks_socket.read_exact(&mut buf)?;
+    socks_socket.read_exact(&mut buf).await?;
     // 4. Check that the authentication method is 0 (no authentication)
     let mut have_no_auth = false;
     for method in buf {
@@ -60,10 +67,10 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
         panic!("No supported authentication method");
     }
     // 5. Send authentication method
-    socks_socket.write_all(&[5, 0]).unwrap();
+    socks_socket.write_all(&[5, 0]).await?;
     // 6. Read request
     let mut buf = [0u8; 4];
-    socks_socket.read_exact(&mut buf).unwrap();
+    socks_socket.read_exact(&mut buf).await?;
     // 7. Check that the version is 5
     if buf[0] != 5 {
         panic!("Invalid SOCKS version");
@@ -81,16 +88,16 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
         1 => {
             // IPv4
             let mut buf = [0u8; 4];
-            socks_socket.read_exact(&mut buf).unwrap();
+            socks_socket.read_exact(&mut buf).await.unwrap();
             Some(smoltcp::wire::IpAddress::v4(buf[0], buf[1], buf[2], buf[3]))
         },
         3 => {
             // Domain name
             match {
                 let mut char_count = [0u8; 1];
-                socks_socket.read_exact(&mut char_count).unwrap();
+                socks_socket.read_exact(&mut char_count).await.unwrap();
                 let mut buf = vec![0u8; char_count[0] as usize];
-                socks_socket.read_exact(&mut buf).unwrap();
+                socks_socket.read_exact(&mut buf).await.unwrap();
                 match String::from_utf8(buf) {
                     Ok(s) => Some(s),
                     Err(e) => {
@@ -155,15 +162,124 @@ fn handle_socks(socks_socket: TcpStream, config: Arc<Config>) -> std::io::Result
     let addr = match addr {
         Some(addr) => addr,
         None => {
-            socks_socket.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).unwrap();
+            socks_socket.write_all(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
             return Err(std::io::Error::new(std::io::ErrorKind::Other, "Invalid address"));
         },
     };
     // 12. Connect to address
     let port = {
         let mut buf = [0u8; 2];
-        socks_socket.read_exact(&mut buf).unwrap();
+        socks_socket.read_exact(&mut buf).await.unwrap();
         u16::from_be_bytes(buf)
     };
-    Ok((socks_socket, addr, port))
+    
+    let handle = {
+        let (otx, orx) = tokio::sync::oneshot::channel();
+        tx.send(Queue::CreateTCPConnection(otx, addr, port)).unwrap();
+        match orx.await.unwrap() {
+            OpenSocketResponse::FailureNoPort => {
+                socks_socket.write_all(&[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]).await.unwrap();
+                return Err(std::io::Error::new(std::io::ErrorKind::Other, "Failed to connect"));
+            },
+            OpenSocketResponse::Success(handle) => handle,
+        }
+    };
+
+    let (packet_tx, mut packet_rx) = tokio::sync::mpsc::unbounded_channel::<Vec<u8>>();
+    let (send_tx, mut send_rx) = tokio::sync::mpsc::channel(1);
+    let peer = match socks_socket.peer_addr() {
+        Ok(addr) => Some(addr),
+        Err(e) => {
+            println!("failed to get peer addr: {}", e);
+            None
+        },
+    };
+    let (mut read_socket, mut send_socket) = socks_socket.into_split();
+
+    let client_socket = ClientSocket{
+        tx: packet_tx,
+        peer,
+        addr,
+        port,
+    };
+    
+    tx.send(Queue::LinkSocket(handle, client_socket)).unwrap();
+
+    let server_closed = Arc::new(AtomicBool::new(false));
+
+    {
+        // socks client -> smoltcp
+        let tx = tx.clone();
+        send_tx.send(()).await.unwrap();
+        let server_closed = server_closed.clone();
+        tokio::spawn(async move {
+            loop {
+                match send_rx.recv().await {
+                    Some(_) => {},
+                    None => break,
+                }
+                let mut buf = [0u8; 1024];
+                let n = match read_socket.read(&mut buf).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        println!("failed to read from socket: {}", e);
+                        break;
+                    },
+                };
+                if n == 0 {
+                    break;
+                }
+                let buf = &buf[..n];
+                if server_closed.load(std::sync::atomic::Ordering::Relaxed) {
+                    return;
+                }
+                match tx.send(Queue::ReceiveFromProxyClient(handle, buf.to_vec(), send_tx.clone())) {
+                    Ok(_) => (),
+                    Err(_) => {
+                        break
+                    },
+                };
+            }
+            tx.send(Queue::DisconnectFromProxyClient(handle)).unwrap();
+        });
+    }
+    
+    {
+        // smoltcp -> socks client
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            match send_socket.write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0]).await {
+                Ok(()) => {},
+                Err(err) => {
+                    println!("failed to send SOCKS response: {}", err);
+                    _ = send_socket.shutdown().await;
+                    tx.send(Queue::DisconnectFromProxyClient(handle)).unwrap();
+                    return;
+                },
+            };
+            loop {
+                match packet_rx.recv().await {
+                    Some(packet) => {
+                        if packet.len() == 0 {
+                            server_closed.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
+                        match send_socket.write_all(&packet).await {
+                            Ok(_) => (),
+                            Err(e) => {
+                                println!("failed to write to socket: {}", e);
+                                break;
+                            },
+                        }
+                    },
+                    None => break,
+                }
+            }
+            _ = send_socket.shutdown().await;
+            server_closed.store(true, std::sync::atomic::Ordering::Relaxed);
+            tx.send(Queue::DisconnectFromProxyClient(handle)).unwrap();
+        });
+    }
+
+    Ok(())
 }
